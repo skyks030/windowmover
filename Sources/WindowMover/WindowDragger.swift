@@ -59,36 +59,30 @@ enum WindowDragger {
         NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) }
     }
 
-    /// Minimum shared edge length for the pointer to be able to cross between two screens.
-    private static let minOverlap: CGFloat = 40
-
+    /// The closest other screen that lies in the given direction (by centre), so offset or diagonal
+    /// arrangements work too. Gaps along the main axis and misalignment across it both count as distance.
     static func neighbor(of screen: NSScreen, _ direction: Direction) -> NSScreen? {
         let f = screen.frame
-        func overlap(_ a0: CGFloat, _ a1: CGFloat, _ b0: CGFloat, _ b1: CGFloat) -> CGFloat { min(a1, b1) - max(a0, b0) }
+        func gap(_ a0: CGFloat, _ a1: CGFloat, _ b0: CGFloat, _ b1: CGFloat) -> CGFloat { max(0, max(a0, b0) - min(a1, b1)) }
 
         let candidates: [(NSScreen, CGFloat)] = NSScreen.screens.compactMap { other in
             guard other != screen else { return nil }
             let g = other.frame
+            let dx = g.midX - f.midX, dy = g.midY - f.midY
+            let gapX = gap(f.minX, f.maxX, g.minX, g.maxX), gapY = gap(f.minY, f.maxY, g.minY, g.maxY)
             switch direction {
-            case .right:
-                guard g.minX >= f.maxX - 2, overlap(f.minY, f.maxY, g.minY, g.maxY) >= minOverlap else { return nil }
-                return (other, g.minX - f.maxX)
-            case .left:
-                guard g.maxX <= f.minX + 2, overlap(f.minY, f.maxY, g.minY, g.maxY) >= minOverlap else { return nil }
-                return (other, f.minX - g.maxX)
-            case .up:
-                guard g.minY >= f.maxY - 2, overlap(f.minX, f.maxX, g.minX, g.maxX) >= minOverlap else { return nil }
-                return (other, g.minY - f.maxY)
-            case .down:
-                guard g.maxY <= f.minY + 2, overlap(f.minX, f.maxX, g.minX, g.maxX) >= minOverlap else { return nil }
-                return (other, f.minY - g.maxY)
+            case .right: return dx > 1 ? (other, gapX + 2 * gapY + abs(dy) * 0.01) : nil
+            case .left:  return dx < -1 ? (other, gapX + 2 * gapY + abs(dy) * 0.01) : nil
+            case .up:    return dy > 1 ? (other, gapY + 2 * gapX + abs(dx) * 0.01) : nil
+            case .down:  return dy < -1 ? (other, gapY + 2 * gapX + abs(dx) * 0.01) : nil
             }
         }
         return candidates.min { $0.1 < $1.1 }?.0
     }
 
-    /// Waypoints for the drag: start → (slide along the edge into the shared band) → cross over → final spot.
+    /// Waypoints for the drag: start → (slide into the shared edge band) → cross over → final spot.
     /// The grabbed point ends up at the same relative position on the target screen.
+    /// Without a shared edge the pointer simply jumps across (points off-screen are skipped while dragging).
     static func plan(from tip: NSPoint, _ direction: Direction) -> [NSPoint]? {
         guard let current = screen(containing: tip) ?? NSScreen.main,
               let target = neighbor(of: current, direction) else { return nil }
@@ -105,13 +99,19 @@ enum WindowDragger {
         var points = [tip]
         switch direction {
         case .left, .right:
-            let bandY = clamp(tip.y, max(c.minY, t.minY) + margin, min(c.maxY, t.maxY) - margin)
-            points.append(NSPoint(x: tip.x, y: bandY))
-            points.append(NSPoint(x: endX, y: bandY))
+            let lo = max(c.minY, t.minY) + margin, hi = min(c.maxY, t.maxY) - margin
+            if lo <= hi {
+                let bandY = clamp(tip.y, lo, hi)
+                points.append(NSPoint(x: tip.x, y: bandY))
+                points.append(NSPoint(x: endX, y: bandY))
+            }
         case .up, .down:
-            let bandX = clamp(tip.x, max(c.minX, t.minX) + margin, min(c.maxX, t.maxX) - margin)
-            points.append(NSPoint(x: bandX, y: tip.y))
-            points.append(NSPoint(x: bandX, y: endY))
+            let lo = max(c.minX, t.minX) + margin, hi = min(c.maxX, t.maxX) - margin
+            if lo <= hi {
+                let bandX = clamp(tip.x, lo, hi)
+                points.append(NSPoint(x: bandX, y: tip.y))
+                points.append(NSPoint(x: bandX, y: endY))
+            }
         }
         points.append(end)
 
@@ -120,6 +120,13 @@ enum WindowDragger {
             result.append(p)
         }
         return result
+    }
+
+    /// Human-readable list of the screens macOS reports, for the menu and error messages.
+    static var screenSummary: String {
+        NSScreen.screens.enumerated().map { i, s in
+            "\(i + 1). \(s.localizedName) – \(Int(s.frame.width))×\(Int(s.frame.height)) bei (\(Int(s.frame.minX)), \(Int(s.frame.minY)))"
+        }.joined(separator: "\n")
     }
 
     // MARK: Drag
@@ -158,6 +165,8 @@ enum WindowDragger {
                 for i in 1...steps {
                     let f = CGFloat(i) / CGFloat(steps)
                     let p = CGPoint(x: from.x + (target.x - from.x) * f, y: from.y + (target.y - from.y) * f)
+                    var count: UInt32 = 0
+                    if i < steps, CGGetDisplaysWithPoint(p, 0, nil, &count) == .success, count == 0 { continue }
                     post(.leftMouseDragged, p, from: last)
                     last = p
                     usleep(7_000)

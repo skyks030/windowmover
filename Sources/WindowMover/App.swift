@@ -71,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !overlay.isVisible { go.toolTip = "Zuerst „Move a Window“ wählen und den Cursor auf eine Titelleiste ziehen." }
         menu.addItem(go)
 
+        let count = NSScreen.screens.count
+        let screens = NSMenuItem(title: count == 1 ? "1 Bildschirm erkannt" : "\(count) Bildschirme erkannt", action: nil, keyEquivalent: "")
+        screens.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: nil)
+        screens.isEnabled = false
+        screens.toolTip = WindowDragger.screenSummary
+        menu.addItem(screens)
+
         menu.addItem(.separator())
 
         if !WindowDragger.hasPermission {
@@ -90,14 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func makeDirectionMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let tip = overlay.tipPoint
         for direction in Direction.allCases {
             let entry = item(direction.title, symbol: direction.symbol, action: #selector(go(_:)))
             entry.representedObject = direction.rawValue
-            if let tip, WindowDragger.plan(from: tip, direction) == nil {
-                entry.isEnabled = false
-                entry.toolTip = "In dieser Richtung gibt es keinen weiteren Bildschirm."
-            }
             menu.addItem(entry)
         }
         return menu
@@ -124,7 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         guard let path = WindowDragger.plan(from: tip, direction) else {
-            alert("Kein Bildschirm \(direction.phrase)", "Neben dem Bildschirm, auf dem der Cursor steht, wurde in dieser Richtung kein weiterer Bildschirm gefunden.")
+            let count = NSScreen.screens.count
+            let reason = count < 2
+                ? "macOS meldet auf diesem Rechner nur einen Bildschirm. WindowMover muss auf dem Mac laufen, an dem die mehreren Monitore hängen (also auf dem entfernten Rechner, nicht auf dem Rechner, von dem aus du dich verbindest)."
+                : "Vom Bildschirm, auf dem der große Zeiger steht, liegt \(direction.phrase) kein weiterer Bildschirm. Versuch eine andere Richtung."
+            alert("Kein Bildschirm \(direction.phrase)", reason + "\n\nErkannte Bildschirme:\n" + WindowDragger.screenSummary)
             return
         }
         overlay.hide()
